@@ -1,0 +1,5 @@
+pytube
+librosa
+numpy
+matplotlib
+streamlit
