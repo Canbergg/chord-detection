@@ -2,19 +2,15 @@ import streamlit as st
 import yt_dlp
 import librosa
 import numpy as np
-import sounddevice as sd
-import queue
-import threading
+import os
+import tempfile
 import time
+import threading
 
 st.title("🎸 Gerçek Zamanlı Akor Algılama")
 
-# Kullanıcıdan YouTube URL'sini al
+# Kullanıcıdan YouTube URL’sini al
 video_url = st.text_input("🎶 YouTube URL'sini girin:")
-
-# Global değişkenler
-audio_queue = queue.Queue()
-running = False
 
 # Akorları belirleme fonksiyonu
 def detect_chord(audio_buffer, sr=22050):
@@ -24,53 +20,52 @@ def detect_chord(audio_buffer, sr=22050):
     dominant_notes = [notes[i] for i in np.argsort(chroma_mean)[-3:][::-1]]
     return dominant_notes
 
-# YouTube'dan sesi stream etmek için fonksiyon
-def stream_audio(video_url):
-    global running
-    running = True
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }],
-        'outtmpl': 'audio.mp3',
-        'quiet': True
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([video_url])
-    
-    y, sr = librosa.load("audio.mp3", sr=22050)
-    
-    # Anlık akorları belirleme
-    chunk_size = sr * 2  # 2 saniyelik parçalar
-    for i in range(0, len(y), chunk_size):
-        if not running:
-            break
-        buffer = y[i:i+chunk_size]
-        chords = detect_chord(buffer, sr)
-        audio_queue.put(chords)
-        time.sleep(2)
+# YouTube'dan sesi indirip analiz etmek için fonksiyon
+def process_audio(video_url):
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': os.path.join(temp_dir, 'audio.%(ext)s'),
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'quiet': True
+            }
 
-# Akorları gösterme fonksiyonu
-def display_chords():
-    while running:
-        if not audio_queue.empty():
-            chords = audio_queue.get()
-            st.write(f"🎶 Çalan Akorlar: {chords}")
-        time.sleep(1)
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([video_url])
+
+            # Dosya adını bul
+            audio_file = None
+            for file in os.listdir(temp_dir):
+                if file.endswith('.mp3'):
+                    audio_file = os.path.join(temp_dir, file)
+                    break
+            
+            if not audio_file:
+                st.error("🎵 Ses dosyası bulunamadı!")
+                return
+            
+            # Ses dosyasını yükle ve analiz et
+            y, sr = librosa.load(audio_file, sr=22050)
+
+            # Akorları belirleme
+            chunk_size = sr * 2  # 2 saniyelik parçalar
+            for i in range(0, len(y), chunk_size):
+                buffer = y[i:i+chunk_size]
+                chords = detect_chord(buffer, sr)
+                st.write(f"🎶 {round(i/sr, 1)} sn - {round((i+chunk_size)/sr, 1)} sn: {chords}")
+                time.sleep(2)  # Akorları anlık olarak göster
+            
+    except Exception as e:
+        st.error(f"Hata oluştu: {e}")
 
 # Kullanıcı "Başlat" butonuna basarsa
 if st.button("Başlat"):
     if video_url:
-        # Arka planda YouTube sesini stream eden thread başlat
-        threading.Thread(target=stream_audio, args=(video_url,)).start()
-        threading.Thread(target=display_chords).start()
+        threading.Thread(target=process_audio, args=(video_url,)).start()
     else:
         st.warning("Lütfen bir YouTube URL'si girin!")
-
-# Kullanıcı "Durdur" butonuna basarsa
-if st.button("Durdur"):
-    running = False
-    st.write("🎵 Ses akışı durduruldu.")
